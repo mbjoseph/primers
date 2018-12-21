@@ -1,0 +1,94 @@
+---
+title: "Get Wind Cave NP data"
+author: "Max Joseph"
+date: "December 20, 2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message=FALSE}
+library(geoknife)
+library(geojsonio)
+library(leaflet)
+library(rgdal)
+library(tidyverse)
+library(raster)
+```
+
+Get national park service boundaries. 
+
+```{r}
+geojson_path <- 'nps.geojson'
+if (!file.exists(geojson_path)) {
+  url <- 'http://open-fedmaps.opendata.arcgis.com/datasets/8b98df1300b749eabc3142864bb9a119_0.geojson'
+  download.file(url, destfile = geojson_path)
+}
+
+parks <- geojson_read(geojson_path, what = "sp")
+poly <- subset(parks, UNIT_NAME == "Wind Cave National Park") %>%
+  spTransform("+proj=longlat +datum=WGS84")
+```
+
+Plot a map of subset boundaries. 
+
+```{r}
+leaflet(poly) %>%
+  addTiles() %>%
+  addPolygons()
+```
+
+## Get climate data
+
+First generate a table of which models and variables we want.
+
+```{r}
+vars <- c('pr', 'tasmax')
+models <- c('BNU-ESM_r1i1p1', 'CNRM-CM5_r1i1p1', 
+            'CSIRO-Mk3-6-0_r1i1p1', 'CanESM2_r1i1p1', 'GFDL-ESM2G_r1i1p1', 
+            'GFDL-ESM2M_r1i1p1', 'HadGEM2-CC365_r1i1p1', 'HadGEM2-ES365_r1i1p1', 
+            'IPSL-CM5A-LR_r1i1p1', 'IPSL-CM5A-MR_r1i1p1', 'IPSL-CM5B-LR_r1i1p1', 
+            'MIROC-ESM-CHEM_r1i1p1', 'MIROC-ESM_r1i1p1', 'MIROC5_r1i1p1', 
+            'MRI-CGCM3_r1i1p1', 'bcc-csm1-1-m_r1i1p1', 'bcc-csm1-1_r1i1p1')
+
+climate_vars <- expand.grid(vars = vars, 
+                            models = models, 
+                            rcp = c('rcp45', 'rcp85')) %>%
+  as_tibble %>%
+  mutate(var_name = paste(vars, models, rcp, sep = "_"))
+
+climate_vars
+```
+
+Then use geoknife to extract the data.
+
+```{r}
+get_maca <- function(poly, time) {
+  stencil <- simplegeom(poly)
+  fabric <- webdata(
+    list(
+      times = time,
+      url = 'http://cida.usgs.gov/thredds/dodsC/macav2metdata_monthly_future',
+      variables = climate_vars$var_name))
+  job <- geoknife(stencil, fabric, wait = TRUE)
+  parks_climate <- result(job, with.units = TRUE)
+  parks_climate
+}
+```
+
+```{r}
+times <- list(c('2019-01-01', '2029-01-01'), 
+              c('2029-01-01', '2039-01-01'), 
+              c('2039-01-01', '2050-01-01'))
+out <- list()
+for (i in seq_along(times)) {
+  out[[i]] <- get_maca(poly, time = times[[i]])
+}
+```
+
+```{r}
+dir.create('output')
+unzip(out, exdir = 'output')
+r <- stack(list.files('output', pattern = '.tif', full.names = TRUE))
+```
+

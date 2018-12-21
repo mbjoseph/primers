@@ -1,0 +1,119 @@
+---
+title: "R geoknife timing experiments"
+author: "Max Joseph"
+date: "12/5/2018"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message=FALSE}
+library(geoknife)
+library(geojsonio)
+library(leaflet)
+library(rgdal)
+library(tidyverse)
+library(reshape2)
+```
+
+Get national park service boundaries. 
+
+```{r}
+geojson_path <- 'nps.geojson'
+if (!file.exists(geojson_path)) {
+  url <- 'http://open-fedmaps.opendata.arcgis.com/datasets/8b98df1300b749eabc3142864bb9a119_0.geojson'
+  download.file(url, destfile = geojson_path)
+}
+
+parks <- geojson_read(geojson_path, what = "sp") %>%
+  subset(UNIT_TYPE == 'National Park' & !(STATE %in% c('AK', 'AS'))) %>%
+  spTransform("+proj=longlat +datum=WGS84")
+```
+
+Subset the parks to select certain polygons
+
+```{r}
+smallest_park <- subset(parks, Shape__Area == min(parks$Shape__Area))
+largest_park <- subset(parks, Shape__Area == max(parks$Shape__Area))
+```
+
+Plot a map of subset boundaries. 
+
+```{r}
+leaflet(rbind(smallest_park, largest_park)) %>%
+  addTiles() %>%
+  addPolygons()
+```
+
+## Get climate data
+
+First generate a table of which models and variables we want.
+
+```{r}
+vars <- c('tasmax', 'pr')#, 'huss', 'rhsmax', 'rhsmin', 'rsds', 'tasmax', 'tasmin', 'was')
+models <- c('BNU-ESM_r1i1p1', 'CNRM-CM5_r1i1p1', 
+            'CSIRO-Mk3-6-0_r1i1p1', 'CanESM2_r1i1p1', 'GFDL-ESM2G_r1i1p1', 
+            'GFDL-ESM2M_r1i1p1', 'HadGEM2-CC365_r1i1p1', 'HadGEM2-ES365_r1i1p1', 
+            'IPSL-CM5A-LR_r1i1p1', 'IPSL-CM5A-MR_r1i1p1', 'IPSL-CM5B-LR_r1i1p1', 
+            'MIROC-ESM-CHEM_r1i1p1', 'MIROC-ESM_r1i1p1', 'MIROC5_r1i1p1', 
+            'MRI-CGCM3_r1i1p1', 'bcc-csm1-1-m_r1i1p1', 'bcc-csm1-1_r1i1p1')
+
+climate_vars <- expand.grid(vars = vars, 
+                            models = models, 
+                            rcp = c('rcp45', 'rcp85')) %>%
+  as_tibble %>%
+  mutate(var_name = paste(vars, models, rcp, sep = "_"))
+
+climate_vars
+```
+
+Define a helper function to get the data and put it in a useable format:
+
+```{r}
+get_maca <- function(poly, time) {
+  stencil <- simplegeom(poly)
+  knife <- webprocess(algorithm = list('OPeNDAP Subset'="gov.usgs.cida.gdp.wps.algorithm.FeatureCoverageOPeNDAPIntersectionAlgorithm"))
+  fabric <- webdata(
+    list(
+      times = time,
+      url = 'http://cida.usgs.gov/thredds/dodsC/macav2metdata_monthly_future',
+      variables = climate_vars$var_name))
+  job <- geoknife(stencil, fabric, knife, wait = TRUE, OUTPUT_TYPE = 'geotiff')
+  parks_climate <- download(job, destination = 'out.zip', overwrite = TRUE)
+  # climate_df <- read_csv('out.csv') %>%
+  #   gather(park, value, -DateTime, -variable, -statistic) %>%
+  #   mutate(OBJECTID_1 = parse_integer(park) + 1) %>%
+  #   left_join(select(parks@data, OBJECTID_1, UNIT_NAME)) %>%
+  #   as_tibble %>%
+  #   separate(variable, c('var', 'model', 'run', 'scenario'),
+  #            sep = '_', remove = FALSE) %>%
+  #   select(-OBJECTID_1, -park)
+  parks_climate
+}
+```
+
+Then use geoknife to extract the data for each timestep.
+
+```{r}
+time_list <- list(c('2019-01-01','2019-02-01'), 
+              c('2019-01-01', '2020-01-01'), 
+              c('2019-01-01', '2029-01-01')) %>%
+  lapply(as.POSIXct)
+out <- list()
+parks_list <- list(smallest_park, largest_park)
+walltimes <- matrix(nrow = length(time_list), ncol = 2)
+for (i in seq_along(time_list)) {
+  for (j in seq_along(parks_list)) {
+    walltimes[i, j] <- system.time(
+        out[[i]] <- get_maca(parks_list[[j]], time = time_list[[i]])
+      )['elapsed']
+  }
+}
+```
+
+
+How does the number of months scale with wall time?
+
+```{r}
+melt(walltimes, varnames = c('time', 'park'))
+```

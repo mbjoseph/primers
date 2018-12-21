@@ -1,0 +1,110 @@
+---
+title: Using geoknife to extract climate data for U.S. national parks
+author: Max Joseph
+date: '2018-11-18'
+slug: using-geoknife-to-extract-climate-data-for-u-s-national-parks
+categories:
+  - R
+tags:
+  - climate
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, message=FALSE}
+library(geoknife)
+library(geojsonio)
+library(leaflet)
+library(rgdal)
+library(tidyverse)
+library(raster)
+```
+
+Get national park service boundaries. 
+
+```{r}
+geojson_path <- 'nps.geojson'
+if (!file.exists(geojson_path)) {
+  url <- 'http://open-fedmaps.opendata.arcgis.com/datasets/8b98df1300b749eabc3142864bb9a119_0.geojson'
+  download.file(url, destfile = geojson_path)
+}
+
+parks <- geojson_read(geojson_path, what = "sp")
+poly <- subset(parks, STATE %in% c('CO') & 
+                  UNIT_TYPE == 'National Park') %>%
+  spTransform("+proj=longlat +datum=WGS84")
+```
+
+Plot a map of subset boundaries. 
+
+```{r}
+leaflet(poly) %>%
+  addTiles() %>%
+  addPolygons()
+```
+
+## Get climate data
+
+First generate a table of which models and variables we want.
+
+```{r}
+vars <- c('huss', 'pr', 'rhsmax', 'rhsmin', 'rsds', 'tasmax', 'tasmin', 'was')
+models <- c('BNU-ESM_r1i1p1', 'CNRM-CM5_r1i1p1', 'CSIRO-Mk3-6-0_r1i1p1')
+
+climate_vars <- expand.grid(vars = vars, models = models) %>%
+  as_tibble %>%
+  mutate(var_name = paste(vars, models, 'historical', sep = "_"))
+
+climate_vars
+```
+
+
+Then use geoknife to extract the data.
+
+```{r}
+stencil <- simplegeom(poly)
+knife <- webprocess(algorithm = list("OPeNDAP Subset" = "gov.usgs.cida.gdp.wps.algorithm.FeatureCoverageOPeNDAPIntersectionAlgorithm"))
+fabric <- webdata(list(
+            times = as.POSIXct(c('1950-01-01','1951-01-01')),
+            url = 'http://cida.usgs.gov/thredds/dodsC/macav2metdata_monthly_historical',
+            variables = climate_vars$var_name))
+```
+
+```{r}
+job <- geoknife(stencil, fabric, knife, wait = TRUE, OUTPUT_TYPE = 'geotiff')
+file <- download(job, destination = 'job.zip', overwrite = TRUE)
+unzip('job.zip', exdir = 'job')
+r <- stack('job/cida.usgs.gov-thredds-dodsC-macav2metdata_monthly_historical-1950-01-15-00-00-00.tiff')
+```
+
+```{r}
+leaflet(poly) %>%
+  addTiles() %>%
+  addRasterImage(r, opacity = 0.8) %>%
+  addPolygons()
+```
+
+Now, munge the data a bit to create a tidy data frame.
+
+```{r}
+climate_df <- parks_climate %>%
+  gather(park, value, -DateTime, -variable, -statistic) %>%
+  mutate(OBJECTID_1 = parse_integer(park) + 1) %>%
+  left_join(select(parks@data, OBJECTID_1, UNIT_NAME)) %>%
+  as_tibble %>%
+  separate(variable, c('var', 'model', 'run', 'period'), 
+           sep = '_', remove = FALSE) %>%
+  select(-OBJECTID_1, -park)
+```
+
+
+Finally, visualize the results.
+
+```{r, fig.width = 10, fig.height = 7}
+climate_df %>%
+  ggplot(aes(DateTime, value, color = model)) + 
+  geom_line(aes(group = interaction(model, run))) + 
+  facet_grid(var ~ UNIT_NAME, scales = 'free', 
+             labeller = labeller(UNIT_NAME = label_wrap_gen(10))) + 
+  theme_minimal()
+```
