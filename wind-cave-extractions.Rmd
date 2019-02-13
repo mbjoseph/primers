@@ -63,32 +63,47 @@ climate_vars
 Then use geoknife to extract the data.
 
 ```{r}
-get_maca <- function(poly, time) {
+get_maca <- function(poly, time, vars, period) {
+  stopifnot(period %in% c('future', 'historical'))
   stencil <- simplegeom(poly)
   fabric <- webdata(
     list(
       times = time,
-      url = 'http://cida.usgs.gov/thredds/dodsC/macav2metdata_monthly_future',
-      variables = climate_vars$var_name))
+      url = paste0('http://cida.usgs.gov/thredds/dodsC/macav2metdata_monthly_', 
+                   period),
+      variables = vars$var_name))
   job <- geoknife(stencil, fabric, wait = TRUE)
+  Sys.sleep(90)
   parks_climate <- result(job, with.units = TRUE)
   parks_climate
 }
 ```
 
 ```{r}
-times <- list(c('2019-01-01', '2029-01-01'), 
-              c('2029-01-01', '2039-01-01'), 
-              c('2039-01-01', '2050-01-01'))
+times <- list(
+  c('2006-01-01', '2015-12-01'), 
+  c('2016-01-01', '2025-12-01'), 
+  c('2026-01-01', '2035-12-01'), 
+  c('2036-01-01', '2046-01-01'))
 out <- list()
 for (i in seq_along(times)) {
-  out[[i]] <- get_maca(poly, time = times[[i]])
+  out[[i]] <- get_maca(poly, time = times[[i]], 
+                       vars = climate_vars, period = 'future')
 }
 ```
 
+
+Combine output into one tibble
+
 ```{r}
-dir.create('output')
-unzip(out, exdir = 'output')
-r <- stack(list.files('output', pattern = '.tif', full.names = TRUE))
+future_climate <- out %>%
+  bind_rows %>%
+  distinct %>%
+  as_tibble %>%
+  gather(park, value, -DateTime, -variable, -statistic, -units) %>%
+  dplyr::select(-park) %>%
+  separate(variable, c('var', 'model', 'run', 'scenario'), 
+         sep = '_', remove = FALSE)
+#write_csv(future_climate, 'future_climate.csv')
 ```
 
