@@ -1,0 +1,4 @@
+# ignore GeoTIFFs and xml files (these are generated programmatically)
+*.tif
+*.xml
+

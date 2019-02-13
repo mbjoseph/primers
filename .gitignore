@@ -29,3 +29,8 @@ job
 nps.geojson
 out.zip
 primers.Rproj
+*.nc
+*.png
+notes/
+*.pdf
+
