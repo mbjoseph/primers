@@ -34,3 +34,6 @@ primers.Rproj
 notes/
 *.pdf
 
+.Rproj.user
+*.tif
+*.tif.aux.xml
